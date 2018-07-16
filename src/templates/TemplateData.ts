@@ -13,22 +13,22 @@ import { betaReleaseVersion, ProjectLanguage, ProjectRuntime, TemplateFilter, te
 import { ext } from '../extensionVariables';
 import { localize } from '../localize';
 import { getFuncExtensionSetting, updateGlobalSetting } from '../ProjectSettings';
+import { dotnetUtils } from '../utils/dotnetUtils';
 import { downloadFile } from '../utils/fs';
 import { cliFeedJsonResponse, getFeedRuntime, tryGetCliFeedJson } from '../utils/getCliFeedJson';
-import { Config } from './Config';
-import { ConfigBinding } from './ConfigBinding';
-import { ConfigSetting } from './ConfigSetting';
-import { Resources } from './Resources';
-import { Template, TemplateCategory } from './Template';
+import { executeDotnetTemplateCommand, getDotnetItemTemplatePath, getDotnetProjectTemplatePath } from './executeDotnetTemplateCommand';
+import { IFunctionTemplate, TemplateCategory } from './IFunctionTemplate';
+import { parseDotnetTemplates } from './parseDotnetTemplates';
+import { parseScriptTemplates } from './parseScriptTemplates';
 
-export type parsedTemplates = [Template[], Config];
 const templatesKey: string = 'FunctionTemplates';
 const configKey: string = 'FunctionTemplateConfig';
 const resourcesKey: string = 'FunctionTemplateResources';
+const dotnetTemplatesKey: string = 'DotnetTemplates';
 const templateVersionKey: string = 'templateVersion';
 const tempPath: string = path.join(os.tmpdir(), 'vscode-azurefunctions-templates');
 
-const verifiedTemplates: string[] = [
+const verifiedV1Templates: string[] = [
     'BlobTrigger-JavaScript',
     'GenericWebHook-JavaScript',
     'GitHubWebHook-JavaScript',
@@ -36,14 +36,22 @@ const verifiedTemplates: string[] = [
     'HttpTriggerWithParameters-JavaScript',
     'ManualTrigger-JavaScript',
     'QueueTrigger-JavaScript',
-    'TimerTrigger-JavaScript'
+    'TimerTrigger-JavaScript',
+    'Azure.Function.CSharp.HttpTrigger.1.x',
+    'Azure.Function.CSharp.BlobTrigger.1.x',
+    'Azure.Function.CSharp.QueueTrigger.1.x',
+    'Azure.Function.CSharp.TimerTrigger.1.x'
 ];
 
-const verifiedCSharpTemplates: string[] = [
-    'HttpTrigger-CSharp',
-    'BlobTrigger-CSharp',
-    'QueueTrigger-CSharp',
-    'TimerTrigger-CSharp'
+const verifiedV2Templates: string[] = [
+    'BlobTrigger-JavaScript',
+    'HttpTrigger-JavaScript',
+    'QueueTrigger-JavaScript',
+    'TimerTrigger-JavaScript',
+    'Azure.Function.CSharp.HttpTrigger.2.x',
+    'Azure.Function.CSharp.BlobTrigger.2.x',
+    'Azure.Function.CSharp.QueueTrigger.2.x',
+    'Azure.Function.CSharp.TimerTrigger.2.x'
 ];
 
 const verifiedJavaTemplates: string[] = [
@@ -57,17 +65,15 @@ const verifiedJavaTemplates: string[] = [
  * We cache the template data retrieved from the portal so that the user can create functions offline.
  */
 export class TemplateData {
-    private readonly _templatesMap: { [runtime: string]: Template[] | undefined } = {};
-    private readonly _configMap: { [runtime: string]: Config | undefined } = {};
+    private readonly _templatesMap: { [runtime: string]: IFunctionTemplate[] | undefined } = {};
     // if there are no templates, then there is likely no internet or a problem with the clifeed url
     private readonly _noInternetErrMsg: string = localize('retryInternet', 'There was an error in retrieving the templates.  Recheck your internet connection and try again.');
-    constructor(templatesMap: { [runtime: string]: Template[] | undefined }, configMap: { [runtime: string]: Config | undefined }) {
+    constructor(templatesMap: { [runtime: string]: IFunctionTemplate[] | undefined }) {
         this._templatesMap = templatesMap;
-        this._configMap = configMap;
     }
 
-    public async getTemplates(language: string, runtime: string = ProjectRuntime.one, templateFilter?: string): Promise<Template[]> {
-        const templates: Template[] | undefined = this._templatesMap[runtime];
+    public async getTemplates(language: string, runtime: string = ProjectRuntime.one, templateFilter?: string): Promise<IFunctionTemplate[]> {
+        const templates: IFunctionTemplate[] | undefined = this._templatesMap[runtime];
         if (!templates) {
             throw new Error(this._noInternetErrMsg);
         }
@@ -76,76 +82,45 @@ export class TemplateData {
             // Currently we leverage JS templates to get the function metadata of Java Functions.
             // Will refactor the code here when templates HTTP API is ready.
             // See issue here: https://github.com/Microsoft/vscode-azurefunctions/issues/84
-            const javaTemplates: Template[] = templates.filter((t: Template) => t.language === ProjectLanguage.JavaScript);
-            return javaTemplates.filter((t: Template) => verifiedJavaTemplates.find((vt: string) => vt === removeLanguageFromId(t.id)));
-        } else if (language === ProjectLanguage.CSharp) {
-            // https://github.com/Microsoft/vscode-azurefunctions/issues/179
-            return templates.filter((t: Template) => verifiedCSharpTemplates.some((id: string) => id === t.id));
+            const javaTemplates: IFunctionTemplate[] = templates.filter((t: IFunctionTemplate) => t.language === ProjectLanguage.JavaScript);
+            return javaTemplates.filter((t: IFunctionTemplate) => verifiedJavaTemplates.find((vt: string) => vt === removeLanguageFromId(t.id)));
         } else {
-            switch (language) {
-                case ProjectLanguage.CSharpScript:
-                case ProjectLanguage.FSharpScript:
-                    // The functions portal only supports script languages, so it doesn't have the notion of 'C#' vs 'C#Script'
-                    language = language.replace('Script', '');
-                    break;
-                default:
-            }
-
-            let filterTemplates: Template[] = templates.filter((t: Template) => t.language.toLowerCase() === language.toLowerCase());
+            let filterTemplates: IFunctionTemplate[] = templates.filter((t: IFunctionTemplate) => t.language.toLowerCase() === language.toLowerCase());
             switch (templateFilter) {
                 case TemplateFilter.All:
                     break;
                 case TemplateFilter.Core:
-                    filterTemplates = filterTemplates.filter((t: Template) => t.isCategory(TemplateCategory.Core));
+                    filterTemplates = filterTemplates.filter((t: IFunctionTemplate) => t.categories.find((c: TemplateCategory) => c === TemplateCategory.Core) !== undefined);
                     break;
                 case TemplateFilter.Verified:
                 default:
-                    filterTemplates = filterTemplates.filter((t: Template) => verifiedTemplates.find((vt: string) => vt === t.id));
+                    const verifiedTemplates: string[] = runtime === ProjectRuntime.one ? verifiedV1Templates : verifiedV2Templates;
+                    filterTemplates = filterTemplates.filter((t: IFunctionTemplate) => verifiedTemplates.find((vt: string) => vt === t.id));
             }
 
             return filterTemplates;
         }
     }
-
-    public async getSetting(runtime: ProjectRuntime, bindingType: string, settingName: string): Promise<ConfigSetting | undefined> {
-        const config: Config | undefined = this._configMap[runtime];
-        if (!config) {
-            throw new Error(this._noInternetErrMsg);
-        }
-        const binding: ConfigBinding | undefined = config.bindings.find((b: ConfigBinding) => b.bindingType === bindingType);
-        if (binding) {
-            return binding.settings.find((bs: ConfigSetting) => bs.name === settingName);
-        } else {
-            return undefined;
-        }
-    }
 }
 
-function verifyTemplatesByRuntime(templates: Template[], runtime: ProjectRuntime): void {
-    if (runtime === ProjectRuntime.one) {
-        for (const verifiedTemplateId of verifiedTemplates) {
-            if (!templates.some((t: Template) => t.id === verifiedTemplateId)) {
-                throw new Error(localize('failedToFindJavaScriptTemplate', 'Failed to find verified template with id "{0}".', verifiedTemplateId));
-            }
-        }
+async function verifyTemplatesByRuntime(templates: IFunctionTemplate[], runtime: ProjectRuntime): Promise<void> {
+    let verifiedTemplates: string[] = runtime === ProjectRuntime.one ? verifiedV1Templates : verifiedV2Templates;
+    try {
+        await dotnetUtils.validateDotnetInstalled();
+    } catch {
+        // Don't verify dotnet templates if the .NET CLI isn't even installed
+        verifiedTemplates = verifiedTemplates.filter((id: string) => !id.includes('CSharp'));
+    }
 
-        for (const verifiedTemplateId of verifiedCSharpTemplates) {
-            if (!templates.some((t: Template) => t.id === verifiedTemplateId)) {
-                throw new Error(localize('failedToFindCSharpTemplate', 'Failed to find verified template with id "{0}".', verifiedTemplateId));
-            }
-        }
-    } else if (runtime === ProjectRuntime.beta) {
-        for (const verifiedTemplateId of verifiedCSharpTemplates) {
-            if (!templates.some((t: Template) => t.id === verifiedTemplateId)) {
-                throw new Error(localize('failedToFindCSharpTemplate', 'Failed to find verified template with id "{0}".', verifiedTemplateId));
-            }
+    for (const verifiedTemplateId of verifiedTemplates) {
+        if (!templates.some((t: IFunctionTemplate) => t.id === verifiedTemplateId)) {
+            throw new Error(localize('failedToVerifiedTemplate', 'Failed to find verified template with id "{0}".', verifiedTemplateId));
         }
     }
 }
 
 export async function getTemplateData(globalState?: vscode.Memento): Promise<TemplateData> {
-    const templatesMap: { [runtime: string]: Template[] | undefined } = {};
-    const configMap: { [runtime: string]: Config | undefined } = {};
+    const templatesMap: { [runtime: string]: IFunctionTemplate[] | undefined } = {};
     const cliFeedJson: cliFeedJsonResponse | undefined = await tryGetCliFeedJson();
     for (const key of Object.keys(ProjectRuntime)) {
         await callWithTelemetryAndErrorHandling('azureFunctions.getTemplateData', async function (this: IActionContext): Promise<void> {
@@ -154,7 +129,7 @@ export async function getTemplateData(globalState?: vscode.Memento): Promise<Tem
             const runtime: ProjectRuntime = <ProjectRuntime>ProjectRuntime[key];
             this.properties.runtime = runtime;
             const templateVersion: string | undefined = await tryGetTemplateVersionSetting(this, cliFeedJson, runtime);
-            let parsedTemplatesByRuntime: parsedTemplates | undefined;
+            let parsedTemplatesByRuntime: IFunctionTemplate[] | undefined;
 
             // 1. Use the cached templates if they match templateVersion
             if (globalState && globalState.get(`${templateVersionKey}-${runtime}`) === templateVersion) {
@@ -182,23 +157,28 @@ export async function getTemplateData(globalState?: vscode.Memento): Promise<Tem
             }
 
             if (parsedTemplatesByRuntime) {
-                [templatesMap[runtime], configMap[runtime]] = parsedTemplatesByRuntime;
+                templatesMap[runtime] = parsedTemplatesByRuntime;
             } else {
                 // Failed to get templates for this runtime
                 this.properties.templateSource = 'None';
             }
         });
     }
-    return new TemplateData(templatesMap, configMap);
+    return new TemplateData(templatesMap);
 }
 
-async function tryGetParsedTemplateDataFromCache(context: IActionContext, runtime: ProjectRuntime, globalState: vscode.Memento): Promise<parsedTemplates | undefined> {
+async function tryGetParsedTemplateDataFromCache(context: IActionContext, runtime: ProjectRuntime, globalState: vscode.Memento): Promise<IFunctionTemplate[] | undefined> {
+    let templates: IFunctionTemplate[] = [];
     try {
         const cachedResources: object | undefined = globalState.get<object>(getRuntimeKey(resourcesKey, runtime));
         const cachedTemplates: object[] | undefined = globalState.get<object[]>(getRuntimeKey(templatesKey, runtime));
         const cachedConfig: object | undefined = globalState.get<object>(getRuntimeKey(configKey, runtime));
         if (cachedResources && cachedTemplates && cachedConfig) {
-            return parseTemplates(cachedResources, cachedTemplates, cachedConfig);
+            templates = templates.concat(parseScriptTemplates(cachedResources, cachedTemplates, cachedConfig));
+        }
+        const cachedDotnetTemplates: object[] | undefined = globalState.get<object[]>(getRuntimeKey(dotnetTemplatesKey, runtime));
+        if (cachedDotnetTemplates) {
+            templates = templates.concat(parseDotnetTemplates(cachedDotnetTemplates, runtime));
         }
     } catch (error) {
         context.properties.cacheError = parseError(error).message;
@@ -206,24 +186,30 @@ async function tryGetParsedTemplateDataFromCache(context: IActionContext, runtim
     return undefined;
 }
 
-async function tryGetParsedTemplateDataFromCliFeed(context: IActionContext, cliFeedJson: cliFeedJsonResponse, templateVersion: string, runtime: ProjectRuntime, globalState?: vscode.Memento): Promise<parsedTemplates | undefined> {
+async function tryGetParsedTemplateDataFromCliFeed(context: IActionContext, cliFeedJson: cliFeedJsonResponse, templateVersion: string, runtime: ProjectRuntime, globalState?: vscode.Memento): Promise<IFunctionTemplate[] | undefined> {
     try {
         context.properties.templateVersion = templateVersion;
+        ext.outputChannel.appendLine(localize('downloadTemplates', 'Downloading "v{0}" templates. . .', templateVersion));
         await downloadAndExtractTemplates(cliFeedJson.releases[templateVersion].templateApiZip, templateVersion);
+        const rawCSharpTemplates: object[] = await downloadAndExtractCSharpTemplates(cliFeedJson, templateVersion, runtime);
+        ext.outputChannel.appendLine(localize('templatesExtracted', 'Finished downloading templates.'));
+
         // only Resources.json has a capital letter
         const rawResources: object = <object>await fse.readJSON(path.join(tempPath, 'resources', 'Resources.json'));
         const rawTemplates: object[] = <object[]>await fse.readJSON(path.join(tempPath, 'templates', 'templates.json'));
         const rawConfig: object = <object>await fse.readJSON(path.join(tempPath, 'bindings', 'bindings.json'));
 
-        const parsedTemplatesByRuntime: parsedTemplates = parseTemplates(rawResources, rawTemplates, rawConfig);
-        verifyTemplatesByRuntime(parsedTemplatesByRuntime[0], runtime);
+        let templates: IFunctionTemplate[] = parseScriptTemplates(rawResources, rawTemplates, rawConfig);
+        templates = templates.concat(parseDotnetTemplates(rawCSharpTemplates, runtime));
+        await verifyTemplatesByRuntime(templates, runtime);
         if (globalState) {
             globalState.update(`${templateVersionKey}-${runtime}`, templateVersion);
             globalState.update(getRuntimeKey(templatesKey, runtime), rawTemplates);
             globalState.update(getRuntimeKey(configKey, runtime), rawConfig);
             globalState.update(getRuntimeKey(resourcesKey, runtime), rawResources);
+            globalState.update(getRuntimeKey(dotnetTemplatesKey, runtime), rawCSharpTemplates);
         }
-        return parsedTemplatesByRuntime;
+        return templates;
 
     } catch (error) {
         context.properties.cliFeedError = parseError(error).message;
@@ -239,27 +225,12 @@ function getRuntimeKey(baseKey: string, runtime: ProjectRuntime): string {
     return runtime === ProjectRuntime.one ? baseKey : `${baseKey}.${runtime}`;
 }
 
-function parseTemplates(rawResources: object, rawTemplates: object[], rawConfig: object): parsedTemplates {
-    const resources: Resources = new Resources(rawResources);
-    const templates: Template[] = [];
-    for (const rawTemplate of rawTemplates) {
-        try {
-            templates.push(new Template(rawTemplate, resources));
-        } catch (error) {
-            // Ignore errors so that a single poorly formed template does not affect other templates
-        }
-    }
-    return [templates, new Config(rawConfig, resources)];
-}
-
 export function removeLanguageFromId(id: string): string {
     return id.split('-')[0];
 }
 
 async function downloadAndExtractTemplates(templateUrl: string, release: string): Promise<{}> {
     const filePath: string = path.join(tempPath, `templates-${release}.zip`);
-    ext.outputChannel.appendLine(localize('downloadTemplates', 'Downloading "v{0}" templates zip file. . .', release));
-    await fse.ensureDir(tempPath);
     await downloadFile(templateUrl, filePath);
 
     return new Promise(async (resolve: () => void, reject: (e: Error) => void): Promise<void> => {
@@ -269,10 +240,26 @@ async function downloadAndExtractTemplates(templateUrl: string, release: string)
             if (err) {
                 reject(err);
             }
-            ext.outputChannel.appendLine(localize('templatesExtracted', 'Template files extracted.'));
             resolve();
         });
     });
+}
+
+async function downloadAndExtractCSharpTemplates(cliFeedJson: cliFeedJsonResponse, templateVersion: string, runtime: ProjectRuntime): Promise<object[]> {
+    try {
+        await dotnetUtils.validateDotnetInstalled();
+    } catch {
+        ext.outputChannel.appendLine(localize('skippingDotnet', 'Skipping download of C# templates because the .NET CLI is not installed.'));
+        return [];
+    }
+
+    const projectFilePath: string = getDotnetProjectTemplatePath(runtime);
+    await downloadFile(cliFeedJson.releases[templateVersion].projectTemplates, projectFilePath);
+
+    const itemFilePath: string = getDotnetItemTemplatePath(runtime);
+    await downloadFile(cliFeedJson.releases[templateVersion].itemTemplates, itemFilePath);
+
+    return <object[]>JSON.parse(await executeDotnetTemplateCommand(runtime, undefined, 'list'));
 }
 
 export async function tryGetTemplateVersionSetting(context: IActionContext, cliFeedJson: cliFeedJsonResponse | undefined, runtime: ProjectRuntime): Promise<string | undefined> {

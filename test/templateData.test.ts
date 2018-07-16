@@ -8,7 +8,7 @@ import { IHookCallbackContext } from 'mocha';
 import { JavaProjectCreator } from '../src/commands/createNewProject/JavaProjectCreator';
 import { JavaScriptProjectCreator } from '../src/commands/createNewProject/JavaScriptProjectCreator';
 import { ProjectLanguage, ProjectRuntime, TemplateFilter } from '../src/constants';
-import { Template } from '../src/templates/Template';
+import { IFunctionTemplate } from '../src/templates/IFunctionTemplate';
 import { getTemplateData, TemplateData } from '../src/templates/TemplateData';
 
 let backupTemplateData: TemplateData;
@@ -35,15 +35,15 @@ suite('Template Data Tests', async () => {
 });
 
 async function validateTemplateData(templateData: TemplateData): Promise<void> {
-    const jsTemplates: Template[] = await templateData.getTemplates(ProjectLanguage.JavaScript, JavaScriptProjectCreator.defaultRuntime, TemplateFilter.Verified);
+    const jsTemplates: IFunctionTemplate[] = await templateData.getTemplates(ProjectLanguage.JavaScript, JavaScriptProjectCreator.defaultRuntime, TemplateFilter.Verified);
     assert.equal(jsTemplates.length, 8, 'Unexpected JavaScript templates count.');
 
-    const javaTemplates: Template[] = await templateData.getTemplates(ProjectLanguage.Java, JavaProjectCreator.defaultRuntime, TemplateFilter.Verified);
+    const javaTemplates: IFunctionTemplate[] = await templateData.getTemplates(ProjectLanguage.Java, JavaProjectCreator.defaultRuntime, TemplateFilter.Verified);
     assert.equal(javaTemplates.length, 4, 'Unexpected Java templates count.');
 
-    const cSharpTemplates: Template[] = await templateData.getTemplates(ProjectLanguage.CSharp, ProjectRuntime.one, TemplateFilter.Verified);
+    const cSharpTemplates: IFunctionTemplate[] = await templateData.getTemplates(ProjectLanguage.CSharp, ProjectRuntime.one, TemplateFilter.Verified);
     assert.equal(cSharpTemplates.length, 4, 'Unexpected CSharp (.NET Framework) templates count.');
 
-    const cSharpTemplatesv2: Template[] = await templateData.getTemplates(ProjectLanguage.CSharp, ProjectRuntime.beta, TemplateFilter.Verified);
+    const cSharpTemplatesv2: IFunctionTemplate[] = await templateData.getTemplates(ProjectLanguage.CSharp, ProjectRuntime.beta, TemplateFilter.Verified);
     assert.equal(cSharpTemplatesv2.length, 4, 'Unexpected CSharp (.NET Core) templates count.');
 }

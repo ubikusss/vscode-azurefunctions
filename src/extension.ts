@@ -43,7 +43,6 @@ import { FunctionAppProvider } from './tree/FunctionAppProvider';
 import { FunctionAppTreeItem } from './tree/FunctionAppTreeItem';
 import { FunctionTreeItem } from './tree/FunctionTreeItem';
 import { ProxyTreeItem } from './tree/ProxyTreeItem';
-import { dotnetUtils } from './utils/dotnetUtils';
 
 export function activate(context: vscode.ExtensionContext): void {
     registerUIExtensionVariables(ext);
@@ -120,7 +119,6 @@ export function activate(context: vscode.ExtensionContext): void {
         registerCommand('azureFunctions.appSettings.decrypt', async (uri?: vscode.Uri) => await decryptLocalSettings(uri));
         registerCommand('azureFunctions.appSettings.encrypt', async (uri?: vscode.Uri) => await encryptLocalSettings(uri));
         registerCommand('azureFunctions.appSettings.delete', async (node?: IAzureNode<AppSettingTreeItem>) => await deleteNode(tree, AppSettingTreeItem.contextValue, node));
-        registerCommand('azureFunctions.uninstallDotnetTemplates', async () => await dotnetUtils.uninstallTemplates());
         registerCommand('azureFunctions.debugFunctionAppOnAzure', async (node?: IAzureNode<FunctionAppTreeItem>) => await remoteDebugFunctionApp(outputChannel, ui, tree, node));
         registerCommand('azureFunctions.deleteProxy', async (node?: IAzureNode) => await deleteNode(tree, ProxyTreeItem.contextValue, node));
         registerCommand('azureFunctions.uninstallFuncCoreTools', async () => await uninstallFuncCoreTools());
